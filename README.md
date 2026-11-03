@@ -1,4 +1,4 @@
-# Learning when to acquire depth-resolved evidence for resource-efficient silicon carbide wafer inspection
+# Learning when to scan: OCT-privileged selective acquisition for resource-efficient silicon carbide wafer inspection
 
 Wide-field bright-field microscopy localizes candidate defects on a 6-inch SiC
 wafer, but cannot resolve whether a defect lies on the surface or buried below
@@ -15,7 +15,7 @@ per-wafer inspection time.
 ## Repository layout
 
 ```
-sic-oct-privileged-inspection/
+SiC-OCT-privileged-inspection/
 ├── code/                 # Training and evaluation pipeline
 │   ├── common.py         #   wafer splits, datasets, targets and shared losses
 │   ├── models.py         #   Teacher, Student and microscopy classifier
