@@ -1,11 +1,5 @@
 # Learning when to scan: OCT-privileged selective acquisition for resource-efficient silicon carbide wafer inspection
 
-Code for
-
-> Qi Lan, Zheng Li, Weiyi Zhang, Xipeng Shen, Jianlong Yang.
-> **Learning when to scan: OCT-privileged selective acquisition for resource-efficient silicon carbide wafer inspection.**
-> School of Biomedical Engineering, Shanghai Jiao Tong University, 2026.
-
 A robot-guided microscopy–OCT inspection framework in which OCT volumes serve as
 *privileged information* during training of a microscopy-only Student. The Student
 predicts a three-class defect label and an ordinal subsurface-likelihood score; a
