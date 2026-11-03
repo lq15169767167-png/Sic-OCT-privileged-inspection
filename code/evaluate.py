@@ -20,6 +20,7 @@ def evaluate(predictions, manifest):
             "auprc": average_precision_score(labels, operational.score),
         }
         if model == "student":
+            # Estimate from unlabeled held-out scores, never from stored target thresholds.
             decision = deploy(operational.score, operational.prediction)
             referred = decision["referred"]
             final = decision["direct_prediction"]

@@ -30,21 +30,35 @@ def _student_forward(model, batch):
     return model(batch["feat_local"], batch["feat_ctx"], batch["metadata"])
 
 
-def _fit(model, train_loader, valid_loader, loss_function, class_counts, forward, learning_rate, epochs, checkpoint):
+def _fit(model, train_loader, valid_loader, loss_function, class_counts, forward, learning_rate, epochs, checkpoint, accumulation_steps=1):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     best, best_state, stale = float("inf"), None, 0
-    for _ in range(epochs):
+    for epoch in range(epochs):
         model.train()
-        for batch in train_loader:
+        for module in model.modules():
+            if isinstance(module, torch.nn.BatchNorm3d):
+                module.eval()
+        optimizer.zero_grad(set_to_none=True)
+        for batch_index, batch in enumerate(train_loader):
             batch = _move(batch); output = forward(model, batch)
             loss = loss_function(output, batch, class_counts)
-            optimizer.zero_grad(); loss.backward(); optimizer.step()
+            if not torch.isfinite(loss):
+                raise FloatingPointError("non-finite training loss")
+            group_start = (batch_index // accumulation_steps) * accumulation_steps
+            group_samples = min(accumulation_steps * train_loader.batch_size,
+                                len(train_loader.sampler) - group_start * train_loader.batch_size)
+            (loss * len(batch["z_star"]) / group_samples).backward()
+            if (batch_index + 1) % accumulation_steps == 0 or batch_index + 1 == len(train_loader):
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
         model.eval(); values = []
         with torch.no_grad():
             for batch in valid_loader:
                 batch = _move(batch); output = forward(model, batch)
                 values.append(loss_function(output, batch, class_counts).item())
         value = float(np.mean(values))
+        print(f"{checkpoint.parent.name}/{checkpoint.stem} epoch={epoch + 1}/{epochs} val_loss={value:.6f}", flush=True)
         if value < best:
             best, best_state, stale = value, copy.deepcopy(model.state_dict()), 0
         else:
@@ -60,7 +74,7 @@ def _fit(model, train_loader, valid_loader, loss_function, class_counts, forward
 @torch.no_grad()
 def _cache_lessons(model, frame, normalization):
     model.eval(); lessons = {}
-    loader = DataLoader(ROIDataset(frame, normalization, load_volume=True), batch_size=32)
+    loader = DataLoader(ROIDataset(frame, normalization, load_volume=True), batch_size=8)
     for batch in loader:
         moved = _move(batch); output = _teacher_forward(model, moved)
         for i, roi_id in enumerate(batch["roi_id"]):
@@ -90,25 +104,32 @@ def _predict(model, frame, normalization, fold, name):
     return pd.DataFrame(rows)
 
 
-def run_fold(manifest, test_wafer, validation_wafer, output_root):
+def run_fold(
+    manifest, test_wafer, validation_wafer, output_root,
+    mae_epochs=40, teacher_epochs=150, student_epochs=100,
+):
+    print(f"Starting fold {test_wafer}; validation={validation_wafer}; device={CFG.device}", flush=True)
     set_seed(CFG.seed + sorted(map(str, manifest.wafer.unique())).index(test_wafer))
     train, valid, test = make_outer_fold(manifest, test_wafer, validation_wafer)
-    train, valid, test, normalization = build_fold_targets(train, valid, test)
     fold_dir = output_root / f"fold_{test_wafer}"
+    mae_path = fold_dir / "mae_encoder.pt"
+    train_mae(train, mae_path, epochs=mae_epochs)
+    train, valid, test, normalization = build_fold_targets(train, valid, test)
     save_fold_metadata(fold_dir / "fold.json", train, valid, test, normalization)
     pd.concat([train.assign(role="train"), valid.assign(role="validation"), test.assign(role="test")]).to_csv(fold_dir / "targets.csv", index=False)
-    mae_path = fold_dir / "mae_encoder.pt"
-    train_mae(train, mae_path)
     counts = _counts(train)
 
     teacher = Teacher(mae_path).to(CFG.device)
     teacher = _fit(
         teacher,
-        DataLoader(ROIDataset(train, normalization, True), batch_size=32, sampler=SubsurfaceSampler(train)),
-        DataLoader(ROIDataset(valid, normalization, True), batch_size=64),
-        teacher_loss, counts, _teacher_forward, 1e-4, 150, fold_dir / "teacher.pt",
+        DataLoader(ROIDataset(train, normalization, True), batch_size=4, sampler=SubsurfaceSampler(train)),
+        DataLoader(ROIDataset(valid, normalization, True), batch_size=8),
+        teacher_loss, counts, _teacher_forward, 1e-4, teacher_epochs, fold_dir / "teacher.pt", accumulation_steps=8,
     )
     lessons = _cache_lessons(teacher, pd.concat([train, valid]), normalization)
+    del teacher
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     predictions = []
     variants = {
@@ -125,7 +146,7 @@ def run_fold(manifest, test_wafer, validation_wafer, output_root):
             model,
             DataLoader(train_ds, batch_size=32, sampler=SubsurfaceSampler(train)),
             DataLoader(valid_ds, batch_size=64),
-            loss_function, counts, _student_forward, 3e-4, 100, fold_dir / f"{name}.pt",
+            loss_function, counts, _student_forward, 3e-4, student_epochs, fold_dir / f"{name}.pt",
         )
         predictions.append(_predict(model, test, normalization, test_wafer, name))
     result = pd.concat(predictions, ignore_index=True).merge(
@@ -138,8 +159,20 @@ def run_fold(manifest, test_wafer, validation_wafer, output_root):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("outputs/lowo"))
+    parser.add_argument("--test-wafer", choices=["W1", "W2", "W3", "W4", "W5"])
+    parser.add_argument("--mae-epochs", type=int, default=40)
+    parser.add_argument("--teacher-epochs", type=int, default=150)
+    parser.add_argument("--student-epochs", type=int, default=100)
     args = parser.parse_args()
     manifest = load_manifest(); wafers = sorted(map(str, manifest.wafer.unique()))
     rotation = validation_rotation(wafers)
-    all_predictions = [run_fold(manifest, test, rotation[test], args.output) for test in wafers]
+    selected = [args.test_wafer] if args.test_wafer else wafers
+    all_predictions = [
+        run_fold(
+            manifest, test, rotation[test], args.output,
+            args.mae_epochs, args.teacher_epochs, args.student_epochs,
+        )
+        for test in selected
+    ]
+    args.output.mkdir(parents=True, exist_ok=True)
     pd.concat(all_predictions, ignore_index=True).to_csv(args.output / "predictions_all_folds.csv", index=False)

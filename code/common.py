@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, Sampler
 
 @dataclass(frozen=True)
 class Config:
-    data_root: Path = Path("data")
+    data_root: Path = Path(__file__).resolve().parents[1] / "data"
     output_root: Path = Path("outputs")
     dino_dim: int = 384
     metadata_dim: int = 5
@@ -32,6 +32,13 @@ CLASS_NAMES = ("normal", "surface", "subsurface")
 
 
 def set_seed(seed: int = CFG.seed) -> None:
+    torch.set_num_threads(4)
+    # TF32 3D convolutions can produce non-finite activations with the
+    # installed PyTorch/CUDA stack on this RTX 4090. Full FP32 is stable for
+    # the same inputs and also makes the numerical policy explicit.
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

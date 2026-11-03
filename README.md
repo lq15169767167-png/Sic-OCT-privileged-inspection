@@ -1,64 +1,78 @@
 # Learning when to scan: OCT-privileged selective acquisition for resource-efficient silicon carbide wafer inspection
 
-Wide-field bright-field microscopy localizes candidate defects on a 6-inch SiC
-wafer, but cannot resolve whether a defect lies on the surface or buried below
-it; spectral-domain optical coherence tomography (OCT) can, yet is too slow to
-scan every candidate. This project trains a microscopy-only **student** model
-with **learning using privileged information (LUPI)** — an OCT-informed
-**teacher** distills subsurface knowledge into the student — so that only the
-candidates the student cannot confidently resolve are referred to OCT. On five
-6-inch wafers (986 annotated ROIs; 736 operational surface/subsurface defects),
-the selective strategy preserves all 305 subsurface defects while spending only
-8.2–11.2 % of the exhaustive OCT scan time (9.8 % pooled), a 67 % reduction in
-per-wafer inspection time.
+Code for
+
+> Qi Lan, Zheng Li, Weiyi Zhang, Xipeng Shen, Jianlong Yang.
+> **Learning when to scan: OCT-privileged selective acquisition for resource-efficient silicon carbide wafer inspection.**
+> School of Biomedical Engineering, Shanghai Jiao Tong University, 2026.
+
+A robot-guided microscopy–OCT inspection framework in which OCT volumes serve as
+*privileged information* during training of a microscopy-only Student. The Student
+predicts a three-class defect label and an ordinal subsurface-likelihood score; a
+label-free, two-threshold (multi-level Otsu) rule then decides per candidate whether
+to accept the microscopy decision directly (low / high score) or refer it for OCT
+(intermediate band). Across five leave-one-wafer-out folds the method retains 100%
+subsurface-defect recall at 27.4% of the candidate-guided OCT acquisition budget.
+
+---
 
 ## Repository layout
 
 ```
 SiC-OCT-privileged-inspection/
-├── code/                 # Training and evaluation pipeline
-│   ├── common.py         #   wafer splits, datasets, targets and shared losses
-│   ├── models.py         #   Teacher, Student and microscopy classifier
-│   ├── losses.py         #   Eqs. (7), (8) and (14), plus Direct
-│   ├── targets.py        #   wafer-cross-fitted R and Eqs. (2)/(4)
-│   ├── train_mae.py      #   Stage A, 75-90% random tube masking
-│   ├── train_lowo.py     #   Stages B-D and outer LOWO evaluation
-│   ├── referral.py       #   label-free Otsu deployment and footprint cost
-│   └── evaluate.py       #   per-wafer metrics from saved test predictions
-├── tests/                # Protocol and equation checks
-├── data/                 # Input data directory
-├── checkpoints/          # Locally generated fold-specific weights (gitignored)
-└── outputs/              # All scripts write their figures here
+├── code/                     # training + evaluation pipeline
+│   ├── common.py             # config, dataset, q*/U* targets, samplers, losses
+│   ├── models.py             # OCTEncoder (3D ResNet-18), Teacher, Student, classifier
+│   ├── train_mae.py          # Stage A: tube-masked autoencoder pretraining on OCT
+│   ├── train_lowo.py         # outer leave-one-wafer-out training (Teacher + 3 Students)
+│   ├── targets.py            # risk cross-fitting, q*/U* construction (Eqs. 2-4)
+│   ├── losses.py             # teacher / student / direct / direct-reg objectives
+│   ├── referral.py           # multi-level Otsu, deployment rule, footprint budget
+│   ├── evaluate.py           # per-wafer AUROC/AUPRC, operating point, macro-F1
+│   └── run_all.py            # pytest gate + train + evaluate entry point
+├── tests/test_methods.py     # unit tests (fold disjointness, targets, Otsu, footprints)
+├── data/                     # local input directory; data files are not included
+├── requirements.txt
+└── LICENSE                   # MIT
 ```
 
-## Quick start
+## Data
+
+Data files are not currently included in this repository. To run training or evaluation,
+place `data/manifest.csv`, the precomputed DINOv2 features in `data/patches/`, and the
+raw OCT volumes in `data/volumes/` locally, as required by the corresponding pipeline
+stage. Training requires `data/volumes/<roi_id>.npy`; otherwise it will raise
+`FileNotFoundError`. The unit tests use synthetic in-memory inputs and do not require
+these data files.
+
+## Usage
 
 ```bash
-python -m venv .venv && source .venv/bin/activate   # or conda
+conda create -n sic-oct python=3.12
 pip install -r requirements.txt
+
+# unit tests
+python -m pytest -q
+
+# train all five leave-one-wafer-out folds (requires data/volumes/, GPU recommended)
+python code/run_all.py --train --output outputs/lowo
+# or a single fold:
+python code/train_lowo.py --test-wafer W1 \
+  --mae-epochs 40 --teacher-epochs 150 --student-epochs 100
+
+# evaluate held-out predictions: per-wafer AUROC/AUPRC, label-free Otsu operating
+# point (thresholds, referral share, subsurface recall, acquisition budget), macro-F1
+python code/evaluate.py \
+  --predictions outputs/lowo/predictions_all_folds.csv \
+  --manifest data/manifest.csv \
+  --output outputs/metrics_per_wafer.csv
 ```
-## Reproducibility and leakage safeguards
 
-- `train_lowo.py` holds out one complete wafer for testing and a different
-  complete wafer for checkpoint selection in every outer fold.
-- Normalization and the microscopy-risk scaling are fitted inside each fold.
-- Training ROI risk is generated by wafer-level cross-fitting.
-- Deployment thresholds use the unlabeled held-out score distribution only.
-- Label-aware complete-recall curves are exposed only as retrospective oracle
-  analyses and cannot alter the deployed thresholds.
-- OCT cost is calculated from the union of A-line footprints rather than from
-  the number of referred ROIs.
-
-## Cohorts and headline numbers
-
-| Cohort | Composition | Use |
-|---|---|---|
-| Augmented (986 ROIs) | 250 normal + 431 surface + 305 subsurface | confidence analysis (Fig. 3c) |
-| Operational (736 ROIs) | 431 surface + 305 subsurface | referral strategy (Figs. 3d, 4, 5) |
-
-Selective inspection: 4.1–5.1 min/wafer vs. 11.7–15.5 min for candidate-guided
-OCT and 35.4 min for exhaustive OCT (Table 2).
+Verified environment: PyTorch 2.7.1+cu118, torchvision 0.22.1, pandas 2.3.3,
+numpy 1.26.3 on Windows with an NVIDIA RTX 4090 (training smoke-tested end to end).
 
 ## License
 
-The code is available under the MIT License (see `LICENSE`).
+MIT License, Copyright (c) 2026 Jianlong Yang and co-authors. See `LICENSE`.
+
+---

@@ -3,6 +3,9 @@ __pycache__/
 .DS_Store
 outputs/*
 !outputs/.gitkeep
+data/*
+!data/.gitkeep
 logs/
 *.log
 checkpoints/
+.pytest_cache/

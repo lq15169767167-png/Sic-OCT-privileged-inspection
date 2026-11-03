@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
-from torchvision.models.video import R3D_18_Weights, r3d_18
+from torchvision.models.video import r3d_18
 
 from common import CFG
 
@@ -11,14 +12,14 @@ from common import CFG
 class OCTEncoder(nn.Module):
     def __init__(self, mae_checkpoint=None):
         super().__init__()
-        backbone = r3d_18(weights=R3D_18_Weights.KINETICS400_V1)
-        self.features = nn.Sequential(*list(backbone.children())[:-1])
+        backbone = r3d_18(weights=None)
+        self.features = nn.Sequential(*list(backbone.children())[:-2])
         if mae_checkpoint is not None:
             state = torch.load(mae_checkpoint, map_location="cpu", weights_only=True)
             self.features.load_state_dict(state)
 
     def forward(self, volume):
-        return self.features(volume).flatten(1)
+        return F.adaptive_avg_pool3d(self.features(volume), 1).flatten(1)
 
 
 class Teacher(nn.Module):
